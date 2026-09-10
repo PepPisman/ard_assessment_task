@@ -19,6 +19,7 @@ A free API key comes from <https://openweathermap.org/api>. A newly created key 
 | Variable | Required | Purpose |
 |---|---|---|
 | `OPENWEATHER_API_KEY` | yes | Server-side key for the OpenWeatherMap current-weather and forecast endpoints. Never exposed to the browser. |
+| `GEO_FALLBACK_CITY` | no | Local-development only. Stands in for the IP geolocation header that Vercel injects in production, so the first-visit detection path can be exercised on localhost. Leave empty to see the normal empty state. |
 
 ### Scripts
 
@@ -55,12 +56,12 @@ src/
 │   │           ├── areas/forecast-strip/        + components/forecast-card
 │   │           └── components/report-status/    idle, loading and error states
 │   ├── (shared)/header/sections/header-main/areas/{logo,theme-toggle}
-│   ├── api/{weather,recent-searches}/route.ts   Route Handlers
+│   ├── api/{weather,recent-searches,geo}/route.ts   Route Handlers
 │   ├── services/
 │   │   ├── openweather/    server → OpenWeatherMap, plus raw response models
 │   │   ├── recent-searches/ server-side store
 │   │   └── weather/        browser → our own API
-│   ├── helpers/            cache, formatting, API error responses
+│   ├── helpers/            cache, formatting, geo headers, API error responses
 │   └── models/             normalized app-facing types
 ├── state-management/context-creator.tsx         generic reducer-context factory
 └── theme/components/base-*/                     UI primitives, zero business logic
@@ -70,7 +71,7 @@ Two FFD rules are enforced throughout: **entities on the same level never import
 
 ### Why the module page is not called `page.tsx`
 
-A `page.tsx` inside `(modules)/weather-dashboard/` would have created a real `/weather-dashboard` route. The module page is `weather-dashboard.page.tsx` — FFD's own dot convention — and `src/app/page.tsx` renders it, so the dashboard stays at `/` with no duplicate route. The build output confirms only `/`, `/api/weather` and `/api/recent-searches` exist.
+A `page.tsx` inside `(modules)/weather-dashboard/` would have created a real `/weather-dashboard` route. The module page is `weather-dashboard.page.tsx` — FFD's own dot convention — and `src/app/page.tsx` renders it, so the dashboard stays at `/` with no duplicate route. The build output confirms only `/`, `/api/weather`, `/api/recent-searches` and `/api/geo` exist.
 
 ### Server vs Client Components
 
@@ -98,6 +99,25 @@ Next.js Route Handlers are uncached by default in this version, which is what we
 | Missing or rejected API key | `500 configuration_error` |
 
 The 401 case deliberately returns a **generic** message. The client is never told anything about the key. Requests also carry an 8-second `AbortController` timeout so a hanging upstream cannot hang the route.
+
+### Geolocation on first visit
+
+A first-time visitor lands on their own local weather, with **no permission prompt**.
+
+Every request to a Vercel Function already carries geolocation headers derived from the caller's IP — `x-vercel-ip-city` among them — and [IP geolocation is enabled on all plans, Hobby included](https://vercel.com/changelog/ip-geolocation-now-available-for-all-plans). So detection costs no dependency, no API key, no rate limit and no extra network hop. Because the header carries a **city name**, it feeds the existing `?city=` contract directly: `/api/weather`, the cache and the error mapping are untouched.
+
+Two details this depends on:
+
+- **The header is read in a Route Handler, never in the page.** Calling `headers()` from `page.tsx` would flip `/` from static to dynamic and give up the prerendered shell. `/api/geo` is dynamic already, so the read is free. The build output still shows `○ /`.
+- **Vercel percent-encodes non-ASCII city names** per RFC3986, so São Paulo arrives as `S%C3%A3o%20Paulo`. The decode is wrapped, because `decodeURIComponent` throws on malformed input and a bad header must never take down the route.
+
+**Why not `navigator.geolocation`?** It prompts for permission on first visit, which is a poor first impression and is usually dismissed — meaning most visitors would see the empty state anyway. It is also async, can hang, and returns coordinates that would need either reverse geocoding or a separate lat/lon path through the API. IP detection is less precise but silent and instant, which is the better trade for a landing view. The precise path is listed under future work.
+
+**Why not a third-party IP service?** ipapi.co and ip-api.com add a dependency, a second failure mode and a round trip, and their free tiers rate-limit hard — ip-api.com is also HTTP-only when free, which a HTTPS page cannot call. Vercel's headers are already in the request.
+
+**Two honest limits.** IP geolocation is approximate: a VPN, corporate proxy or carrier gateway can place a visitor in the wrong city, so the detected city is a *starting suggestion* the user can search straight past, never a claim about where they are. And the headers only exist in production — locally, `GEO_FALLBACK_CITY` stands in.
+
+The detected city is deliberately **not** written to recent searches. `/api/weather` takes `record=false` for this, so "the last five **searched** cities" keeps meaning what it says rather than filling up with a city the visitor never typed.
 
 ### Recent searches, and an honest trade-off
 
@@ -132,16 +152,17 @@ Each forecast card carries a bar spanning that day's low to high, positioned aga
 bun test
 ```
 
-31 tests via Bun's built-in runner — no extra test framework. They target the logic most likely to break rather than happy-path rendering:
+37 tests via Bun's built-in runner — no extra test framework. They target the logic most likely to break rather than happy-path rendering:
 
 - **Cache** — hit before expiry, miss after it, and that key normalization collapses casing and padding.
 - **Error mapping** — every upstream status maps to the right code, the 401 path leaks neither the key nor the phrase "api key", and an empty city short-circuits before any upstream call.
 - **Normalization** — raw OWM payloads become our types, and 3-hourly slots bucket into days using the reading nearest midday rather than whichever slot came first.
 - **Recent searches** — the list is capped at five, normalizes before storing, and ignores blank input.
+- **Geolocation headers** — the city is decoded from Vercel's percent-encoding, a malformed header returns null instead of throwing, and the real header wins over the development fallback.
 
 ## What I would improve given more time
 
-- **Geolocation on first visit.** The API takes a city name; supporting coordinates means an extra route parameter and a permission-request UX worth doing properly rather than rushing.
+- **Precise geolocation.** First-visit detection is IP-based. Offering `navigator.geolocation` behind an explicit "Use my location" control would be more accurate, but needs a lat/lon path through the API and a permission-request UX worth doing properly rather than rushing.
 - **A shared cache across instances.** The in-memory cache and `/tmp` SQLite are both per-instance. Redis or Vercel KV would make both correct in a multi-instance deployment.
 - **Component tests.** Current coverage is server-side logic. The search interaction, suggestion list and state transitions deserve tests with a DOM testing library.
 - **Debounced live suggestions.** Suggestions currently filter the recent-search list; a geocoding autocomplete would help first-time users with an empty history.

@@ -5,7 +5,9 @@ import { recordSearch } from "@/app/services/recent-searches/recent-searches.api
 const MAX_CITY_LENGTH = 100;
 
 export async function GET(request: Request): Promise<Response> {
-  const city = new URL(request.url).searchParams.get("city")?.trim() ?? "";
+  const params = new URL(request.url).searchParams;
+  const city = params.get("city")?.trim() ?? "";
+  const shouldRecord = params.get("record") !== "false";
 
   if (!city || city.length > MAX_CITY_LENGTH) {
     return errorResponse(new WeatherApiError(400, "invalid_city", "Please enter a city name."));
@@ -13,7 +15,10 @@ export async function GET(request: Request): Promise<Response> {
 
   try {
     const weather = await getWeather(city);
-    await recordSearch(city);
+
+    if (shouldRecord) {
+      await recordSearch(city);
+    }
 
     return Response.json(weather);
   } catch (error) {

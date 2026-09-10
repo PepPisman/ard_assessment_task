@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 import {
   recentSearchesLoaded,
   searchFailed,
@@ -13,7 +20,11 @@ import {
 } from "@/app/(modules)/weather-dashboard/state-management/weather-search/weather-search.context";
 import { SuggestionList } from "@/app/(modules)/weather-dashboard/sections/city-search/areas/search-input/components/suggestion-list/suggestion-list.component";
 import { formatCityLabel } from "@/app/helpers/format.helper";
-import { fetchRecentSearches, fetchWeather } from "@/app/services/weather/weather.api";
+import {
+  fetchDetectedCity,
+  fetchRecentSearches,
+  fetchWeather,
+} from "@/app/services/weather/weather.api";
 import { BaseButton } from "@/theme/components/base-button/base-button";
 import { BaseCard } from "@/theme/components/base-card/base-card";
 import { BaseIcon } from "@/theme/components/base-icon/base-icon";
@@ -54,44 +65,68 @@ export function SearchInputArea() {
   );
   const isListOpen = suggestionsOpen && suggestions.length > 0;
 
-  async function runSearch(city: string): Promise<void> {
-    const trimmed = city.trim();
+  const runSearch = useCallback(
+    async (city: string, record = true): Promise<void> => {
+      const trimmed = city.trim();
 
-    if (!trimmed) {
-      return;
-    }
-
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-
-    setSuggestionsOpen(false);
-    setActiveIndex(-1);
-    dispatch(searchStarted(trimmed));
-
-    try {
-      const weather = await fetchWeather(trimmed);
-
-      if (requestIdRef.current !== requestId) {
+      if (!trimmed) {
         return;
       }
 
-      dispatch(searchSucceeded(weather));
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
 
-      const searches = await fetchRecentSearches();
+      setSuggestionsOpen(false);
+      setActiveIndex(-1);
+      dispatch(searchStarted(trimmed));
 
-      if (requestIdRef.current !== requestId) {
+      try {
+        const weather = await fetchWeather(trimmed, record);
+
+        if (requestIdRef.current !== requestId) {
+          return;
+        }
+
+        dispatch(searchSucceeded(weather));
+
+        if (!record) {
+          return;
+        }
+
+        const searches = await fetchRecentSearches();
+
+        if (requestIdRef.current !== requestId) {
+          return;
+        }
+
+        dispatch(recentSearchesLoaded(searches));
+      } catch (error) {
+        if (requestIdRef.current !== requestId) {
+          return;
+        }
+
+        dispatch(searchFailed(error instanceof Error ? error.message : "Something went wrong."));
+      }
+    },
+    [dispatch],
+  );
+
+  useEffect(() => {
+    let active = true;
+
+    fetchDetectedCity().then((city) => {
+      if (!active || !city || requestIdRef.current !== 0) {
         return;
       }
 
-      dispatch(recentSearchesLoaded(searches));
-    } catch (error) {
-      if (requestIdRef.current !== requestId) {
-        return;
-      }
+      setQuery(city);
+      void runSearch(city, false);
+    });
 
-      dispatch(searchFailed(error instanceof Error ? error.message : "Something went wrong."));
-    }
-  }
+    return () => {
+      active = false;
+    };
+  }, [runSearch]);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
