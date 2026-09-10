@@ -32,10 +32,22 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
 
+# firecrawl (local CLI cache, dev tooling only)
+.firecrawl
+
+# local sqlite
+/data
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local tooling
+CLAUDE.md
+AGENTS.md
+.idea/
